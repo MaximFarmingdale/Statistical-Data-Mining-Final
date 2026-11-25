@@ -1,0 +1,182 @@
+---
+title: "Final_Project"
+author: "Maxim Nikiforov"
+date: "2026-11-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(car)
+library(statmod)
+library(tweedie)
+library(corrplot)
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Final Project
+
+## Loading in the data
+``` {r}
+freq_data <- read.csv("data/freMTPL2freq.csv")
+sev_data <- read.csv("data/freMTPL2sev.csv")
+v_agg <- aggregate(ClaimAmount ~ IDpol, data = sev_data, FUN = sum)
+total_data <- merge(freq_data, v_agg, by = "IDpol", all.x = TRUE)
+total_data$ClaimAmount[is.na(total_data$ClaimAmount)] <- 0
+count <- nrow(total_data)
+```
+
+## Summary Statistics
+### ClaimNb
+``` {r}
+cat("The mean is ", mean( total_data$ClaimNb), "\n")
+cat("The median is ", median(total_data$ClaimNb), "\n")
+cat("The max is ", max(total_data$ClaimNb), "\n")
+cat("The variance is ", var(total_data$ClaimNb), "\n")
+num_zero_claims <- sum(total_data$ClaimNb == 0)
+cat("The number of zero claims is", num_zero_claims, "\n")
+percent_zero_claims <- num_zero_claims / count
+cat("The percent of zero claims is ", percent_zero_claims, "\n")
+```
+Var > Mean suggesting overdispersion for Poisson models of ClaimNb
+### ClaimAmount
+``` {r}
+cat(mean("The mean is ", total_data$ClaimAmount), "\n")
+cat("The median is ", median(total_data$ClaimAmount), "\n")
+cat("The max is ", max(total_data$ClaimAmount), "\n")
+cat("The variance is ", var(total_data$ClaimAmount), "\n")
+```
+### Exposure
+``` {r}
+boxplot(total_data$Exposure,
+        main = "Distibution of Exposure",
+        ylab = "Exposure",
+        col = "lightblue")
+cat(mean("The mean is ", total_data$Exposure), "\n")
+cat("The median is ", median(total_data$Exposure), "\n")
+cat("The max is ", max(total_data$Exposure), "\n")
+cat("The variance is ", var(total_data$Exposure), "\n")
+```
+### Continuous Data
+``` {r}
+summarize_continuous <- function(df, var_name) {
+  x <- df[[var_name]]
+  
+  cat("\n-----------", var_name, "-----------\n")
+  cat("The mean is ", mean(x, na.rm = TRUE), "\n")
+  cat("The median is ", median(x, na.rm = TRUE), "\n")
+  cat("The max is ", max(x, na.rm = TRUE), "\n")
+  cat("The variance is ", var(x, na.rm = TRUE), "\n")
+  par(mfrow = c(1, 2))
+  boxplot(x,
+          main = paste("Distribution of", var_name),
+          ylab = var_name,
+          col = "lightblue")
+  boxplot(log1p(x),
+          main = paste("Log-Transformed:", var_name),
+          ylab = paste0("log(", var_name, " + 1)"),
+          col = "lightgreen")
+  }
+cont_vars <- c("DrivAge", "VehAge", "BonusMalus", "Density", "VehPower")
+
+for (v in cont_vars) {
+  summarize_continuous(total_data, v)
+}
+cat("\n BonusMalas min is", min(total_data$BonusMalus), "\n")
+```
+VehAge and Density seem to have very right skewed box plot which improve greatly after a log transformation. BonusMalus is right shewed in both the normal and log transformed box plots, Looking at a Swiss Actuarial Society paper(page 13) it seems that their approach to BonusMalus was to cap it at 150. 
+``` {r}
+total_data$VehAgeLog <- log(total_data$VehAge +1)
+total_data$DensityLog <- log(total_data$Density + 1)
+total_data$BonusMalusLimit <- pmin(total_data$BonusMalus, 150)
+```
+### Categorical Data
+``` {r}
+summarize_categorical <- function(df, var_name) {
+  cat("\n-----------", var_name, "-----------\n")
+  
+  counts <- table(df[[var_name]])
+  probs <- round(prop.table(counts) * 100, 2)
+  mean_claims <- round(tapply(df$ClaimNb, df[[var_name]], mean, na.rm = TRUE), 4)
+  mean_amount <- round(tapply(df$ClaimAmount, df[[var_name]], mean, na.rm = TRUE), 2)
+  
+  summary_df <- data.frame(
+    Level = names(counts),
+    Count = as.numeric(counts),
+    Percent = as.numeric(probs),
+    Mean_ClaimNb = as.numeric(mean_claims),
+    Mean_ClaimAmount = as.numeric(mean_amount)
+  )
+  
+  print(summary_df, row.names = FALSE)
+}
+cat_vars <- c("Area", "VehBrand", "VehGas", "Region")
+
+for (v in cat_vars) {
+  summarize_categorical(total_data, v)
+}
+```
+  Area is a categorical variable with highly rural areas being the first few letters such as A and B and highly urban areas as E, F being the last letter and the letters in between representing the inbetween those categories Area B has a much higher rate of claim amounts while most other areas are similar in that aspect. Claim rates seem to generally increase as the area gets more urban. 
+# summarize the rest of this please
+### General Analysis
+``` {r}
+pred_vars <- total_data[, c("DrivAge", "VehAgeLog", "BonusMalusLimit", "DensityLog", "VehPower", "Exposure")]
+
+cat("\n------------ The correlation matrix is ------------\n")
+corr_matrix <- cor(pred_vars, use = "complete.obs")
+print(corr_matrix)
+cat("\n------------ The correlation with ClaimAmount is ------------\n")
+corr_claim_amount <- cor(pred_vars, total_data$ClaimAmount, use = "complete.obs")
+print(corr_claim_amount)
+cat("\n------------ The correlation with ClaimNb is ------------\n")
+corr_claim_num <- cor(pred_vars, total_data$ClaimNb, use = "complete.obs")
+print(corr_claim_num)
+corrplot(corr_matrix,
+         method = "color",
+         type = "upper"
+         )
+corrplot(corr_claim_amount,
+         method = "color"
+         )
+corrplot(corr_claim_num,
+         method = "color"
+         )
+```
+It seems that BonusMalus is moderately negatively correlated with DrivAge, other than that the risk of multicollinearity  seems quite low. However we should check the VIF scores
+``` {r}
+#creating model just to use the vif function
+vif_model <- glm(
+  ClaimNb ~ DrivAge + VehAgeLog + BonusMalusLimit + DensityLog + VehPower + Exposure + Area + VehBrand + VehGas + Region,
+  data = total_data,
+  family = poisson(link = "log")
+)
+vif_results <- vif(vif_model)
+print(vif_results)
+```
+There is extreme multicolinearity with Density and Area. This suggests that regularization methods may be effective.
+## Model Creation
+
+### Tweedie models
+``` {r}
+#It takes too long on the full dataset so we use a limited dataset for tweedie p selection
+set.seed(123)
+sub_idx <- sample(seq_len(nrow(total_data)), size = 25000)
+sub_dataset <- total_data[sub_idx, ]
+p_out <- tweedie_profile(
+  ClaimAmount ~ DrivAge + VehAgeLog + BonusMalusLimit + DensityLog + VehPower + Exposure + VehBrand + VehGas + Region,
+  data = sub_dataset,
+  p.vec = seq(1.1, 1.9, by = 0.1),
+  do.plot = TRUE
+)
+best_p <- p_out$p.max
+set.seed(123)
+k <- 5
+folds <- sample(rep(1:k, length.out = nrow(train_data)))
+tweedie_cv_dev  <- numeric(k)
+tweedie_cv_rmse <- numeric(k)
+for (i in 1:k) {
+  cv_train <- total_data[folds != i]
+  cv_valdation <- total_data[folds == i]
+  fit <- glm(ClaimAmount ~ DrivAge + VehAgeLog + BonusMalusLimit + DensityLog + VehPower + Exposure + VehBrand + VehGas + Region)
+  preds <- predict(fit, newdata = cv_val, type = "response")
+  
+}
+```
